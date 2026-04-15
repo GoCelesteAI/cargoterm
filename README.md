@@ -163,6 +163,42 @@ The last 5 turns (your input, the command that ran, and its output, truncated) a
 >>> what's the biggest one
 ```
 
+### Use from your normal shell (no REPL)
+
+If you'd rather stay in zsh and invoke cargoterm ad-hoc, there's a shell integration mode. Add one line to your `~/.zshrc`:
+
+```sh
+eval "$(cargoterm init zsh)"
+```
+
+Then, in any zsh session:
+
+```text
+~/code/cargoterm $ cargoterm-on
+cargoterm: ON — press Ctrl+G to translate the current line
+
+◉ ~/code/cargoterm $ who am i⎵       # type the line, then press Ctrl+G
+◉ ~/code/cargoterm $ whoami          # buffer replaced in place
+daryl                                 # press Enter to run
+
+◉ ~/code/cargoterm $ cargoterm-off
+cargoterm: OFF
+```
+
+- `cargoterm-on` / `cargoterm-off` toggle the mode. While on, your prompt gets a bold `◉` indicator so you can see at a glance that AI translation is a keystroke away.
+- `Ctrl+G` reads whatever's currently in the line buffer, sends it to the local model via `cargoterm --translate`, and replaces the buffer with the suggested shell command. The model's one-line explanation appears as a zsh message above the prompt.
+- Regular commands pass through unchanged — the keybinding is opt-in per line.
+
+Under the hood this uses `cargoterm --translate "<query>"`, which prints two lines to stdout and exits — you can wire it up from other shells or editors too:
+
+```sh
+$ cargoterm --translate "present directory"
+cmd: pwd
+explain: Prints the absolute path of the current working directory.
+```
+
+> **Note for themed prompts (Starship, Oh My Zsh powerlevel10k, etc.):** frameworks that rebuild `PROMPT` on every redraw will overwrite the bold indicator. `cargoterm-on` still toggles the state and `Ctrl+G` still works — only the prompt decoration may not stick. A future release will expose the state as an env var (`CARGOTERM_ACTIVE=1`) that you can reference from your theme config.
+
 ### Saving a session
 
 Type `/save` at the prompt to export the current session as a markdown file:

@@ -3,6 +3,7 @@ mod exec;
 mod history;
 mod ollama;
 mod setup;
+mod shell_init;
 mod transcript;
 
 use anyhow::Result;
@@ -29,8 +30,28 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(shell) = extract_init_target(&args) {
+        match shell_init::render(&shell) {
+            Some(snippet) => {
+                print!("{snippet}");
+                return Ok(());
+            }
+            None => {
+                eprintln!(
+                    "cargoterm: unsupported shell '{shell}'. Supported: {}",
+                    shell_init::supported().join(", ")
+                );
+                std::process::exit(2);
+            }
+        }
+    }
+
     let cfg_override = extract_flag_value(&args, "--config").map(PathBuf::from);
     let (cfg, cfg_path) = config::load(cfg_override.as_deref())?;
+
+    if let Some(query) = extract_flag_value(&args, "--translate") {
+        return run_translate(&cfg, &query).await;
+    }
 
     if args.iter().any(|a| a == "--print-config") {
         if let Some(p) = &cfg_path {
@@ -201,6 +222,36 @@ fn handle_save(path_arg: Option<&str>, transcript: &Transcript) {
     }
 }
 
+async fn run_translate(cfg: &Config, query: &str) -> Result<()> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        eprintln!("cargoterm: --translate requires a non-empty query");
+        std::process::exit(2);
+    }
+    match ollama::interpret(&cfg.ollama, trimmed, "").await {
+        Ok(interp) => {
+            let cmd_oneline = interp.cmd.replace('\n', " ");
+            let explain_oneline = interp.explain.replace('\n', " ");
+            println!("cmd: {cmd_oneline}");
+            println!("explain: {explain_oneline}");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("cargoterm: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn extract_init_target(args: &[String]) -> Option<String> {
+    for (i, a) in args.iter().enumerate().skip(1) {
+        if a == "init" {
+            return args.get(i + 1).cloned();
+        }
+    }
+    None
+}
+
 fn is_on_path(cmd: &str) -> bool {
     if cmd.is_empty() {
         return false;
@@ -304,11 +355,17 @@ fn print_help() {
 
 USAGE:
     cargoterm [OPTIONS]
+    cargoterm init <shell>
 
 OPTIONS:
     --setup             Check that Ollama and the default model are ready
     --config PATH       Use an alternate config file (default: $XDG_CONFIG_HOME/cargoterm/config.toml)
     --print-config      Print the effective config (merged with defaults) and exit
+    --translate QUERY   One-shot: translate QUERY and print `cmd:` + `explain:` lines to stdout.
+                        Does not execute the command. Used by shell integrations.
+    init <shell>        Print a shell integration snippet (supported: zsh).
+                        Add `eval \"$(cargoterm init zsh)\"` to your ~/.zshrc to get
+                        the cargoterm-on/off toggles and a Ctrl+G translation keybinding.
     -h, --help          Show this help
     -V, --version       Show version
 
