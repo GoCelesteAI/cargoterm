@@ -41,7 +41,19 @@ Everything runs **locally** — the LLM lives on your machine via [Ollama](https
 
 ## Quickstart
 
-### Option A — prebuilt binary (fastest)
+### Option A — Homebrew (macOS & Linux, recommended)
+
+```sh
+brew install gocelesteai/tap/cargoterm
+brew install ollama            # if you don't have it yet
+ollama serve &                 # or launch the Ollama app on macOS
+cargoterm --setup              # verifies ollama, pulls the default model
+cargoterm                      # drops you into the >>> REPL
+```
+
+Upgrades: `brew upgrade gocelesteai/tap/cargoterm`.
+
+### Option B — prebuilt binary (manual)
 
 Grab the latest release for your platform from [Releases](https://github.com/GoCelesteAI/cargoterm/releases) and extract it onto your `PATH`:
 
@@ -65,7 +77,7 @@ xattr -d com.apple.quarantine /usr/local/bin/cargoterm
 
 Then install [Ollama](https://ollama.com), run `cargoterm --setup`, and you're done.
 
-### Option B — build from source
+### Option C — build from source
 
 ```sh
 # 1. Install Rust (skip if you already have it)
@@ -213,7 +225,6 @@ Dispatch order for any input line:
 
 ## Roadmap
 
-- [ ] Homebrew formula (`brew install gocelesteai/tap/cargoterm`)
 - [ ] Streaming command output instead of buffered capture
 - [ ] Session transcript export
 
