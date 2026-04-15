@@ -92,9 +92,74 @@ _cargoterm_translate_widget() {
 zle -N _cargoterm_translate_widget
 bindkey '^G' _cargoterm_translate_widget
 
+# Heuristic: does the current BUFFER look like a real command the user meant
+# to run literally, or natural language that should go to the LLM?
+# Prints nothing; returns 0 (passthrough) or 1 (translate).
+_cargoterm_looks_like_command() {
+    local first="${BUFFER%% *}"
+
+    # cd and exit always pass through.
+    [[ "$first" == "cd" || "$first" == "exit" ]] && return 0
+
+    # Explicit path form.
+    case "$first" in
+        ./*|../*|/*|~*) return 0 ;;
+    esac
+
+    # Split tokens via zsh word-split; do not reuse $tokens (special array).
+    local -a _toks
+    _toks=(${=BUFFER})
+
+    # If any argument looks like a flag, path, or assignment, this is a
+    # command invocation, not English: e.g. `ls -la`, `cp a/b c`, `K=V cmd`.
+    local tok
+    for tok in "${_toks[@]:1}"; do
+        case "$tok" in
+            -*|*/*|*=*) return 0 ;;
+        esac
+    done
+
+    # If the first word doesn't resolve to anything the shell recognises,
+    # it's almost certainly English. Translate.
+    (( ${+commands[$first]} || ${+functions[$first]} || ${+aliases[$first]} || ${+builtins[$first]} )) || return 1
+
+    # Commands that routinely take plain-word arguments — passthrough.
+    # Extend this list in your shell if you use others heavily:
+    #   CARGOTERM_PASSTHROUGH_CMDS=(... custom tools ...)
+    local -a known
+    known=(
+        git gh hg
+        cargo rustup
+        npm pnpm yarn
+        pip uv poetry pipx
+        brew apt dnf yum pacman
+        docker podman kubectl helm
+        make cmake bazel ninja
+        ssh scp rsync curl wget
+        ls cat cp mv mkdir rmdir touch ln head tail
+        echo printf env
+        tar zip unzip gunzip gzip
+        vi vim nvim nano emacs code
+        go python python3 ruby node deno bun
+    )
+    if (( ${#CARGOTERM_PASSTHROUGH_CMDS} )); then
+        known+=("${CARGOTERM_PASSTHROUGH_CMDS[@]}")
+    fi
+    if (( ${known[(Ie)$first]} )); then
+        return 0
+    fi
+
+    # Single-token, shell-resolvable → plain command like `ls`, `pwd`.
+    (( ${#_toks[@]} == 1 )) && return 0
+
+    # First word happens to be a command name (like `where`, `who`, `find`,
+    # `cat`, `file`) but the rest reads as English. Translate.
+    return 1
+}
+
 # Enter — smart accept: while mode is on, translate English input; pass
-# real commands (binary/function/alias/builtin) straight through; a second
-# Enter press after a translation runs the rewritten command.
+# real commands straight through; a second Enter press after a translation
+# runs the rewritten command.
 _cargoterm_accept_line() {
     # Mode off or empty buffer → normal accept
     if [[ -z "$CARGOTERM_ACTIVE" || -z "$BUFFER" ]]; then
@@ -110,13 +175,7 @@ _cargoterm_accept_line() {
     # Buffer changed since last translation — discard pending state
     unset CARGOTERM_PENDING_CMD
 
-    # Skip LLM when the first token is something we can resolve locally.
-    local first="${BUFFER%% *}"
-    if [[ "$first" == "cd" || "$first" == "exit" ]] \
-        || (( ${+commands[$first]} )) \
-        || (( ${+functions[$first]} )) \
-        || (( ${+aliases[$first]} )) \
-        || (( ${+builtins[$first]} )); then
+    if _cargoterm_looks_like_command; then
         zle .accept-line
         return
     fi
@@ -161,6 +220,36 @@ mod tests {
     fn zsh_snippet_uses_double_enter_pattern() {
         let snippet = render("zsh").unwrap();
         assert!(snippet.contains("CARGOTERM_PENDING_CMD"));
+    }
+
+    #[test]
+    fn zsh_snippet_has_refined_heuristic() {
+        let snippet = render("zsh").unwrap();
+        assert!(snippet.contains("_cargoterm_looks_like_command"));
+        // Flag / path / assignment detection
+        assert!(snippet.contains("-*|*/*|*=*"));
+        // Explicit path prefixes
+        assert!(snippet.contains("./*|../*|/*|~*"));
+    }
+
+    #[test]
+    fn zsh_snippet_passthrough_whitelist_has_common_tools() {
+        let snippet = render("zsh").unwrap();
+        for tool in ["git", "cargo", "npm", "docker", "ssh", "ls", "echo"] {
+            assert!(
+                snippet.contains(&format!(" {tool} "))
+                    || snippet.contains(&format!("{tool} "))
+                    || snippet.contains(&format!(" {tool}\n"))
+                    || snippet.contains(&format!("\n        {tool}")),
+                "whitelist missing {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn zsh_snippet_supports_user_passthrough_extension() {
+        let snippet = render("zsh").unwrap();
+        assert!(snippet.contains("CARGOTERM_PASSTHROUGH_CMDS"));
     }
 
     #[test]
