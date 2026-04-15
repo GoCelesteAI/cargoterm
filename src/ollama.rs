@@ -2,9 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-pub const HOST: &str = "http://localhost:11434";
-pub const MODEL: &str = "qwen3:14b";
-const ENDPOINT: &str = "http://localhost:11434/api/generate";
+use crate::config::OllamaConfig;
 
 const SYSTEM: &str = "You translate a user's natural-language request into a single POSIX shell \
 command for macOS.\n\
@@ -48,9 +46,13 @@ pub struct Interpretation {
     pub explain: String,
 }
 
-pub async fn interpret(user_input: &str, history: &str) -> Result<Interpretation> {
+pub async fn interpret(
+    cfg: &OllamaConfig,
+    user_input: &str,
+    history: &str,
+) -> Result<Interpretation> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(cfg.timeout_secs))
         .build()?;
 
     let prompt = if history.is_empty() {
@@ -60,7 +62,7 @@ pub async fn interpret(user_input: &str, history: &str) -> Result<Interpretation
     };
 
     let req = GenerateReq {
-        model: MODEL,
+        model: &cfg.model,
         prompt,
         system: SYSTEM,
         stream: false,
@@ -68,12 +70,14 @@ pub async fn interpret(user_input: &str, history: &str) -> Result<Interpretation
         think: false,
     };
 
+    let endpoint = format!("{}/api/generate", cfg.host.trim_end_matches('/'));
+
     let resp: GenerateResp = client
-        .post(ENDPOINT)
+        .post(&endpoint)
         .json(&req)
         .send()
         .await
-        .context("failed to reach ollama at localhost:11434 — is it running?")?
+        .with_context(|| format!("failed to reach ollama at {} — is it running?", cfg.host))?
         .error_for_status()?
         .json()
         .await

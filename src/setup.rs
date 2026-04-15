@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::process::Command;
 use std::time::Duration;
 
-use crate::ollama;
+use crate::config::Config;
 
 #[derive(Deserialize)]
 struct TagsResp {
@@ -17,13 +17,21 @@ struct TagEntry {
     name: String,
 }
 
-pub async fn run() -> Result<()> {
+pub async fn run(cfg: &Config, cfg_path: Option<&std::path::Path>) -> Result<()> {
     println!("cargoterm setup\n");
+
+    match cfg_path {
+        Some(p) if p.exists() => println!("  config:  {}", p.display()),
+        Some(p) => println!("  config:  {} (not present — defaults in use)", p.display()),
+        None => println!("  config:  <no config path available>"),
+    }
+    println!("  host:    {}", cfg.ollama.host);
+    println!("  model:   {}\n", cfg.ollama.model);
 
     let step1 = check_ollama_binary();
     report("Ollama binary on PATH", &step1);
 
-    let step2 = check_endpoint_reachable().await;
+    let step2 = check_endpoint_reachable(&cfg.ollama.host).await;
     report("Ollama daemon reachable", &step2);
 
     if step2.is_err() {
@@ -34,18 +42,18 @@ pub async fn run() -> Result<()> {
         return Ok(());
     }
 
-    let have_model = check_model_installed().await?;
+    let have_model = check_model_installed(&cfg.ollama.host, &cfg.ollama.model).await?;
     report(
-        &format!("Default model `{}` installed", ollama::MODEL),
+        &format!("Default model `{}` installed", cfg.ollama.model),
         &if have_model { Ok(()) } else { Err(anyhow::anyhow!("missing")) },
     );
 
     if !have_model {
         if prompt_yes_no(&format!(
-            "\nPull `{}` now? (~9 GB download) [Y/n] ",
-            ollama::MODEL
+            "\nPull `{}` now? (large download) [Y/n] ",
+            cfg.ollama.model
         )) {
-            pull_model()?;
+            pull_model(&cfg.ollama.model)?;
         } else {
             println!("Skipped. cargoterm will fail on natural-language input until the model is pulled.");
             return Ok(());
@@ -68,27 +76,27 @@ fn check_ollama_binary() -> Result<()> {
     }
 }
 
-async fn check_endpoint_reachable() -> Result<()> {
+async fn check_endpoint_reachable(host: &str) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()?;
-    let url = format!("{}/api/tags", ollama::HOST);
+    let url = format!("{}/api/tags", host.trim_end_matches('/'));
     client.get(&url).send().await?.error_for_status()?;
     Ok(())
 }
 
-async fn check_model_installed() -> Result<bool> {
+async fn check_model_installed(host: &str, model: &str) -> Result<bool> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()?;
-    let url = format!("{}/api/tags", ollama::HOST);
+    let url = format!("{}/api/tags", host.trim_end_matches('/'));
     let tags: TagsResp = client.get(&url).send().await?.error_for_status()?.json().await?;
-    Ok(tags.models.iter().any(|m| m.name == ollama::MODEL))
+    Ok(tags.models.iter().any(|m| m.name == model))
 }
 
-fn pull_model() -> Result<()> {
+fn pull_model(model: &str) -> Result<()> {
     println!();
-    let status = Command::new("ollama").arg("pull").arg(ollama::MODEL).status()?;
+    let status = Command::new("ollama").arg("pull").arg(model).status()?;
     if !status.success() {
         return Err(anyhow::anyhow!("ollama pull exited with {status}"));
     }

@@ -121,15 +121,37 @@ The last 5 turns (your input, the command that ran, and its output, truncated) a
 
 ## Configuration
 
-Currently hard-coded in `src/ollama.rs`:
+cargoterm reads an optional TOML config file on startup. The default location follows XDG:
 
-| Setting  | Default                             |
-| -------- | ----------------------------------- |
-| Endpoint | `http://localhost:11434/api/generate` |
-| Model    | `qwen3:14b`                         |
-| Timeout  | 60s                                 |
+```
+$XDG_CONFIG_HOME/cargoterm/config.toml
+# falls back to ~/.config/cargoterm/config.toml
+```
 
-Editing those constants and rebuilding is the current way to swap models. A proper config file is on the roadmap.
+Pass `--config PATH` to override. All keys are optional — anything missing falls back to the built-in default, so the file can be as small as you need.
+
+```toml
+[ollama]
+host = "http://localhost:11434"
+model = "qwen3:14b"
+timeout_secs = 60
+
+[safety]
+# Commands containing any of these tokens are refused outright.
+deny = ["rm", "sudo", "mkfs", "dd", "shutdown", "reboot", ":(){", "chmod"]
+
+# Clean commands (no shell metacharacters) whose first token is here
+# will auto-run without a confirmation prompt.
+allow = ["pwd", "whoami", "ls", "date", "du", "cat", "head", "tail", "stat", "file"]
+```
+
+To see the effective merged config:
+
+```sh
+cargoterm --print-config
+```
+
+Want to swap to a smaller local model? Create the file above and change `model` to e.g. `qwen3:8b` or `llama3:8b`, then `ollama pull <that model>` and you're done — no rebuild needed.
 
 ## Safety
 
@@ -149,6 +171,7 @@ The denylist is defensive, not exhaustive. Read what you run.
 ```text
 src/
 ├── main.rs      REPL, dispatcher, built-ins, confirm/deny/allow gates
+├── config.rs    TOML config loader + defaults
 ├── ollama.rs    HTTP client + strict JSON prompt for the model
 ├── history.rs   Ring buffer of recent turns, rendered into the prompt
 └── setup.rs     `cargoterm --setup` health check + model pull
@@ -164,7 +187,6 @@ Dispatch order for any input line:
 
 - [ ] Prebuilt binaries on GitHub Releases (macOS arm64/x86_64, Linux x86_64)
 - [ ] Homebrew formula (`brew install gocelesteai/tap/cargoterm`)
-- [ ] Config file (`~/.config/cargoterm/config.toml`) — model, endpoint, denylist, allowlist
 - [ ] Streaming command output instead of buffered capture
 - [ ] Session transcript export
 

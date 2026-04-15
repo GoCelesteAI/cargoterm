@@ -1,8 +1,10 @@
+mod config;
 mod history;
 mod ollama;
 mod setup;
 
 use anyhow::Result;
+use config::Config;
 use history::History;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -10,14 +12,6 @@ use std::env;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-const DENY: &[&str] = &["rm", "sudo", "mkfs", "dd", "shutdown", "reboot", ":(){", "chmod"];
-
-const SAFE_ALLOW: &[&str] = &[
-    "pwd", "whoami", "hostname", "uname", "date", "uptime", "id", "groups", "tty", "arch",
-    "ls", "cat", "head", "tail", "wc", "file", "stat", "readlink", "basename", "dirname",
-    "df", "du", "echo", "printf", "which", "type", "env", "printenv", "history",
-];
 
 const SHELL_METACHARS: &[char] = &['|', '&', ';', '>', '<', '`', '$', '\\', '\n'];
 
@@ -32,8 +26,20 @@ async fn main() -> Result<()> {
         println!("cargoterm {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+
+    let cfg_override = extract_flag_value(&args, "--config").map(PathBuf::from);
+    let (cfg, cfg_path) = config::load(cfg_override.as_deref())?;
+
+    if args.iter().any(|a| a == "--print-config") {
+        if let Some(p) = &cfg_path {
+            println!("# source: {}{}", p.display(), if p.exists() { "" } else { " (not present)" });
+        }
+        print!("{}", config::render(&cfg));
+        return Ok(());
+    }
+
     if args.iter().any(|a| a == "--setup") {
-        return setup::run().await;
+        return setup::run(&cfg, cfg_path.as_deref()).await;
     }
 
     let mut rl = DefaultEditor::new()?;
@@ -44,7 +50,10 @@ async fn main() -> Result<()> {
 
     let mut hist = History::new();
 
-    println!("cargoterm {} — type 'exit' or Ctrl-D to quit", env!("CARGO_PKG_VERSION"));
+    println!(
+        "cargoterm {} — type 'exit' or Ctrl-D to quit",
+        env!("CARGO_PKG_VERSION")
+    );
 
     loop {
         let prompt = build_prompt();
@@ -55,7 +64,7 @@ async fn main() -> Result<()> {
                     continue;
                 }
                 rl.add_history_entry(input)?;
-                if !dispatch(input, &mut hist).await {
+                if !dispatch(input, &cfg, &mut hist).await {
                     break;
                 }
             }
@@ -72,7 +81,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn dispatch(input: &str, hist: &mut History) -> bool {
+async fn dispatch(input: &str, cfg: &Config, hist: &mut History) -> bool {
     let mut parts = input.split_whitespace();
     let first = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
@@ -109,13 +118,13 @@ async fn dispatch(input: &str, hist: &mut History) -> bool {
         return true;
     }
 
-    match ollama::interpret(input, &hist.render()).await {
+    match ollama::interpret(&cfg.ollama, input, &hist.render()).await {
         Ok(interp) => {
-            if let Some(bad) = deny_hit(&interp.cmd) {
+            if let Some(bad) = deny_hit(&cfg.safety.deny, &interp.cmd) {
                 eprintln!("[blocked: contains '{bad}'] {}", interp.cmd);
                 return true;
             }
-            let should_run = if is_safe_auto(&interp.cmd) {
+            let should_run = if is_safe_auto(&cfg.safety.allow, &interp.cmd) {
                 println!("[auto: {}]", interp.cmd);
                 true
             } else {
@@ -141,24 +150,37 @@ fn is_on_path(cmd: &str) -> bool {
     env::split_paths(&path).any(|p| p.join(cmd).is_file())
 }
 
-fn deny_hit(cmd: &str) -> Option<&'static str> {
+fn deny_hit<'a>(deny: &'a [String], cmd: &str) -> Option<&'a str> {
     let lower = cmd.to_lowercase();
-    DENY.iter().copied().find(|bad| {
+    deny.iter().find(|bad| {
         lower.split(|c: char| !c.is_ascii_alphanumeric() && c != ':' && c != '(' && c != '{')
-            .any(|tok| tok == *bad)
-    })
+            .any(|tok| tok == bad.as_str())
+    }).map(|s| s.as_str())
 }
 
 fn has_metachars(cmd: &str) -> bool {
     cmd.chars().any(|c| SHELL_METACHARS.contains(&c))
 }
 
-fn is_safe_auto(cmd: &str) -> bool {
+fn is_safe_auto(allow: &[String], cmd: &str) -> bool {
     if has_metachars(cmd) {
         return false;
     }
     let first = cmd.split_whitespace().next().unwrap_or("");
-    SAFE_ALLOW.contains(&first)
+    allow.iter().any(|a| a == first)
+}
+
+fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
+    let mut it = args.iter().enumerate();
+    while let Some((i, a)) = it.next() {
+        if a == flag {
+            return args.get(i + 1).cloned();
+        }
+        if let Some(rest) = a.strip_prefix(&format!("{flag}=")) {
+            return Some(rest.to_string());
+        }
+    }
+    None
 }
 
 fn confirm(cmd: &str, explain: &str) -> bool {
@@ -256,9 +278,11 @@ USAGE:
     cargoterm [OPTIONS]
 
 OPTIONS:
-    --setup       Check that Ollama and the default model are ready
-    -h, --help    Show this help
-    -V, --version Show version
+    --setup             Check that Ollama and the default model are ready
+    --config PATH       Use an alternate config file (default: $XDG_CONFIG_HOME/cargoterm/config.toml)
+    --print-config      Print the effective config (merged with defaults) and exit
+    -h, --help          Show this help
+    -V, --version       Show version
 
 Inside the REPL: type shell commands normally, or plain English to let the
 local LLM translate. LLM-generated commands show a confirmation prompt
@@ -272,57 +296,82 @@ compile_error!("cargoterm currently targets Unix-like systems (macOS/Linux)");
 
 #[cfg(test)]
 mod tests {
-    use super::{deny_hit, has_metachars, is_safe_auto, shorten_path};
+    use super::{
+        deny_hit, extract_flag_value, has_metachars, is_safe_auto, shorten_path,
+    };
+    use crate::config::SafetyConfig;
     use std::path::PathBuf;
+
+    fn safety() -> SafetyConfig {
+        SafetyConfig::default()
+    }
 
     #[test]
     fn blocks_rm() {
-        assert!(deny_hit("rm -rf /").is_some());
+        assert!(deny_hit(&safety().deny, "rm -rf /").is_some());
     }
     #[test]
     fn blocks_sudo() {
-        assert!(deny_hit("sudo ls").is_some());
+        assert!(deny_hit(&safety().deny, "sudo ls").is_some());
     }
     #[test]
     fn allows_pwd() {
-        assert!(deny_hit("pwd").is_none());
+        assert!(deny_hit(&safety().deny, "pwd").is_none());
     }
     #[test]
     fn allows_whoami() {
-        assert!(deny_hit("whoami").is_none());
+        assert!(deny_hit(&safety().deny, "whoami").is_none());
     }
 
     #[test]
     fn auto_whoami() {
-        assert!(is_safe_auto("whoami"));
+        assert!(is_safe_auto(&safety().allow, "whoami"));
     }
     #[test]
     fn auto_pwd() {
-        assert!(is_safe_auto("pwd"));
+        assert!(is_safe_auto(&safety().allow, "pwd"));
     }
     #[test]
     fn auto_ls_with_flags() {
-        assert!(is_safe_auto("ls -la"));
+        assert!(is_safe_auto(&safety().allow, "ls -la"));
     }
     #[test]
     fn not_auto_git() {
-        assert!(!is_safe_auto("git status"));
+        assert!(!is_safe_auto(&safety().allow, "git status"));
     }
     #[test]
     fn not_auto_pipe_even_if_safe_first() {
-        assert!(!is_safe_auto("ls | rm -rf /"));
+        assert!(!is_safe_auto(&safety().allow, "ls | rm -rf /"));
     }
     #[test]
     fn not_auto_redirect() {
-        assert!(!is_safe_auto("cat /etc/passwd > /tmp/out"));
+        assert!(!is_safe_auto(&safety().allow, "cat /etc/passwd > /tmp/out"));
     }
     #[test]
     fn not_auto_subshell() {
-        assert!(!is_safe_auto("echo $(rm -rf /)"));
+        assert!(!is_safe_auto(&safety().allow, "echo $(rm -rf /)"));
     }
     #[test]
     fn not_auto_backtick() {
-        assert!(!is_safe_auto("echo `rm -rf /`"));
+        assert!(!is_safe_auto(&safety().allow, "echo `rm -rf /`"));
+    }
+
+    #[test]
+    fn flag_value_separated() {
+        let args: Vec<String> = ["cargoterm", "--config", "/tmp/c.toml"]
+            .iter().map(|s| s.to_string()).collect();
+        assert_eq!(extract_flag_value(&args, "--config"), Some("/tmp/c.toml".to_string()));
+    }
+    #[test]
+    fn flag_value_equals() {
+        let args: Vec<String> = ["cargoterm", "--config=/tmp/c.toml"]
+            .iter().map(|s| s.to_string()).collect();
+        assert_eq!(extract_flag_value(&args, "--config"), Some("/tmp/c.toml".to_string()));
+    }
+    #[test]
+    fn flag_value_missing() {
+        let args: Vec<String> = ["cargoterm"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(extract_flag_value(&args, "--config"), None);
     }
     #[test]
     fn metachar_detects_pipe() {
