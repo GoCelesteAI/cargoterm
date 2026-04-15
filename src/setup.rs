@@ -45,7 +45,11 @@ pub async fn run(cfg: &Config, cfg_path: Option<&std::path::Path>) -> Result<()>
     let have_model = check_model_installed(&cfg.ollama.host, &cfg.ollama.model).await?;
     report(
         &format!("Default model `{}` installed", cfg.ollama.model),
-        &if have_model { Ok(()) } else { Err(anyhow::anyhow!("missing")) },
+        &if have_model {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("missing"))
+        },
     );
 
     if !have_model {
@@ -55,7 +59,9 @@ pub async fn run(cfg: &Config, cfg_path: Option<&std::path::Path>) -> Result<()>
         )) {
             pull_model(&cfg.ollama.model)?;
         } else {
-            println!("Skipped. cargoterm will fail on natural-language input until the model is pulled.");
+            println!(
+                "Skipped. cargoterm will fail on natural-language input until the model is pulled."
+            );
             return Ok(());
         }
     }
@@ -72,7 +78,9 @@ fn check_ollama_binary() -> Result<()> {
     if found {
         Ok(())
     } else {
-        Err(anyhow::anyhow!("`ollama` not found on PATH — install from https://ollama.com"))
+        Err(anyhow::anyhow!(
+            "`ollama` not found on PATH — install from https://ollama.com"
+        ))
     }
 }
 
@@ -90,7 +98,13 @@ async fn check_model_installed(host: &str, model: &str) -> Result<bool> {
         .timeout(Duration::from_secs(10))
         .build()?;
     let url = format!("{}/api/tags", host.trim_end_matches('/'));
-    let tags: TagsResp = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let tags: TagsResp = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     Ok(tags.models.iter().any(|m| m.name == model))
 }
 

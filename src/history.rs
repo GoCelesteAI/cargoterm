@@ -15,7 +15,9 @@ pub struct History {
 
 impl History {
     pub fn new() -> Self {
-        Self { turns: VecDeque::with_capacity(MAX_TURNS) }
+        Self {
+            turns: VecDeque::with_capacity(MAX_TURNS),
+        }
     }
 
     pub fn push(&mut self, input: &str, cmd: &str, output: &str) {

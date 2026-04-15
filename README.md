@@ -1,5 +1,9 @@
 # cargoterm
 
+[![CI](https://github.com/GoCelesteAI/cargoterm/actions/workflows/ci.yml/badge.svg)](https://github.com/GoCelesteAI/cargoterm/actions/workflows/ci.yml)
+[![Release](https://github.com/GoCelesteAI/cargoterm/actions/workflows/release.yml/badge.svg)](https://github.com/GoCelesteAI/cargoterm/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 An AI-augmented terminal in Rust. Type plain commands like you would in any shell — or type in plain English and let a local LLM translate it into a shell command for you.
 
 ```text
@@ -37,7 +41,31 @@ Everything runs **locally** — the LLM lives on your machine via [Ollama](https
 
 ## Quickstart
 
-Five steps to go from zero to `>>>`:
+### Option A — prebuilt binary (fastest)
+
+Grab the latest release for your platform from [Releases](https://github.com/GoCelesteAI/cargoterm/releases) and extract it onto your `PATH`:
+
+```sh
+# Pick the tarball matching your platform:
+#   cargoterm-<version>-aarch64-apple-darwin.tar.gz    (macOS Apple Silicon)
+#   cargoterm-<version>-x86_64-apple-darwin.tar.gz     (macOS Intel)
+#   cargoterm-<version>-x86_64-unknown-linux-gnu.tar.gz (Linux x86_64)
+
+curl -L -o cargoterm.tar.gz \
+  https://github.com/GoCelesteAI/cargoterm/releases/latest/download/cargoterm-<version>-<target>.tar.gz
+tar -xzf cargoterm.tar.gz
+sudo mv cargoterm-*/cargoterm /usr/local/bin/
+```
+
+On macOS you may need to clear the quarantine attribute the first time:
+
+```sh
+xattr -d com.apple.quarantine /usr/local/bin/cargoterm
+```
+
+Then install [Ollama](https://ollama.com), run `cargoterm --setup`, and you're done.
+
+### Option B — build from source
 
 ```sh
 # 1. Install Rust (skip if you already have it)
@@ -185,7 +213,6 @@ Dispatch order for any input line:
 
 ## Roadmap
 
-- [ ] Prebuilt binaries on GitHub Releases (macOS arm64/x86_64, Linux x86_64)
 - [ ] Homebrew formula (`brew install gocelesteai/tap/cargoterm`)
 - [ ] Streaming command output instead of buffered capture
 - [ ] Session transcript export

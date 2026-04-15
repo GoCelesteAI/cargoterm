@@ -4,7 +4,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub ollama: OllamaConfig,
@@ -23,12 +23,6 @@ pub struct OllamaConfig {
 pub struct SafetyConfig {
     pub deny: Vec<String>,
     pub allow: Vec<String>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self { ollama: OllamaConfig::default(), safety: SafetyConfig::default() }
-    }
 }
 
 impl Default for OllamaConfig {
@@ -51,17 +45,19 @@ impl Default for SafetyConfig {
 }
 
 fn default_deny() -> Vec<String> {
-    ["rm", "sudo", "mkfs", "dd", "shutdown", "reboot", ":(){", "chmod"]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect()
+    [
+        "rm", "sudo", "mkfs", "dd", "shutdown", "reboot", ":(){", "chmod",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect()
 }
 
 fn default_allow() -> Vec<String> {
     [
         "pwd", "whoami", "hostname", "uname", "date", "uptime", "id", "groups", "tty", "arch",
-        "ls", "cat", "head", "tail", "wc", "file", "stat", "readlink", "basename", "dirname",
-        "df", "du", "echo", "printf", "which", "type", "env", "printenv", "history",
+        "ls", "cat", "head", "tail", "wc", "file", "stat", "readlink", "basename", "dirname", "df",
+        "du", "echo", "printf", "which", "type", "env", "printenv", "history",
     ]
     .iter()
     .map(|s| (*s).to_string())
@@ -94,10 +90,10 @@ pub fn load(path_override: Option<&Path>) -> Result<(Config, Option<PathBuf>)> {
         return Ok((Config::default(), Some(p)));
     }
 
-    let text = fs::read_to_string(&p)
-        .with_context(|| format!("reading config file {}", p.display()))?;
-    let cfg: Config = toml::from_str(&text)
-        .with_context(|| format!("parsing config file {}", p.display()))?;
+    let text =
+        fs::read_to_string(&p).with_context(|| format!("reading config file {}", p.display()))?;
+    let cfg: Config =
+        toml::from_str(&text).with_context(|| format!("parsing config file {}", p.display()))?;
     Ok((cfg, Some(p)))
 }
 

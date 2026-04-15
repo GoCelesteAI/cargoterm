@@ -32,7 +32,11 @@ async fn main() -> Result<()> {
 
     if args.iter().any(|a| a == "--print-config") {
         if let Some(p) = &cfg_path {
-            println!("# source: {}{}", p.display(), if p.exists() { "" } else { " (not present)" });
+            println!(
+                "# source: {}{}",
+                p.display(),
+                if p.exists() { "" } else { " (not present)" }
+            );
         }
         print!("{}", config::render(&cfg));
         return Ok(());
@@ -152,10 +156,13 @@ fn is_on_path(cmd: &str) -> bool {
 
 fn deny_hit<'a>(deny: &'a [String], cmd: &str) -> Option<&'a str> {
     let lower = cmd.to_lowercase();
-    deny.iter().find(|bad| {
-        lower.split(|c: char| !c.is_ascii_alphanumeric() && c != ':' && c != '(' && c != '{')
-            .any(|tok| tok == bad.as_str())
-    }).map(|s| s.as_str())
+    deny.iter()
+        .find(|bad| {
+            lower
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != ':' && c != '(' && c != '{')
+                .any(|tok| tok == bad.as_str())
+        })
+        .map(|s| s.as_str())
 }
 
 fn has_metachars(cmd: &str) -> bool {
@@ -171,8 +178,7 @@ fn is_safe_auto(allow: &[String], cmd: &str) -> bool {
 }
 
 fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
-    let mut it = args.iter().enumerate();
-    while let Some((i, a)) = it.next() {
+    for (i, a) in args.iter().enumerate() {
         if a == flag {
             return args.get(i + 1).cloned();
         }
@@ -234,15 +240,23 @@ fn emit(stdout: &[u8], stderr: &[u8]) -> String {
             eprintln!();
         }
     }
-    if err.is_empty() { out } else { format!("{out}{err}") }
+    if err.is_empty() {
+        out
+    } else {
+        format!("{out}{err}")
+    }
 }
 
 fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(stripped) = p.strip_prefix('~') {
-        if let Some(home) = home_dir() {
-            let rest = stripped.trim_start_matches('/');
-            return if rest.is_empty() { home } else { home.join(rest) };
-        }
+    if let Some(stripped) = p.strip_prefix('~')
+        && let Some(home) = home_dir()
+    {
+        let rest = stripped.trim_start_matches('/');
+        return if rest.is_empty() {
+            home
+        } else {
+            home.join(rest)
+        };
     }
     PathBuf::from(p)
 }
@@ -257,15 +271,15 @@ fn build_prompt() -> String {
 }
 
 fn shorten_path(p: &Path) -> String {
-    if let Some(home) = home_dir() {
-        if let Ok(rest) = p.strip_prefix(&home) {
-            let rest_str = rest.to_string_lossy();
-            return if rest_str.is_empty() {
-                "~".to_string()
-            } else {
-                format!("~/{rest_str}")
-            };
-        }
+    if let Some(home) = home_dir()
+        && let Ok(rest) = p.strip_prefix(&home)
+    {
+        let rest_str = rest.to_string_lossy();
+        return if rest_str.is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{rest_str}")
+        };
     }
     p.display().to_string()
 }
@@ -296,9 +310,7 @@ compile_error!("cargoterm currently targets Unix-like systems (macOS/Linux)");
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        deny_hit, extract_flag_value, has_metachars, is_safe_auto, shorten_path,
-    };
+    use super::{deny_hit, extract_flag_value, has_metachars, is_safe_auto, shorten_path};
     use crate::config::SafetyConfig;
     use std::path::PathBuf;
 
@@ -359,14 +371,24 @@ mod tests {
     #[test]
     fn flag_value_separated() {
         let args: Vec<String> = ["cargoterm", "--config", "/tmp/c.toml"]
-            .iter().map(|s| s.to_string()).collect();
-        assert_eq!(extract_flag_value(&args, "--config"), Some("/tmp/c.toml".to_string()));
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            extract_flag_value(&args, "--config"),
+            Some("/tmp/c.toml".to_string())
+        );
     }
     #[test]
     fn flag_value_equals() {
         let args: Vec<String> = ["cargoterm", "--config=/tmp/c.toml"]
-            .iter().map(|s| s.to_string()).collect();
-        assert_eq!(extract_flag_value(&args, "--config"), Some("/tmp/c.toml".to_string()));
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            extract_flag_value(&args, "--config"),
+            Some("/tmp/c.toml".to_string())
+        );
     }
     #[test]
     fn flag_value_missing() {
