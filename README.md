@@ -44,14 +44,18 @@ Everything runs **locally** — the LLM lives on your machine via [Ollama](https
 ### Option A — Homebrew (macOS & Linux, recommended)
 
 ```sh
-brew install gocelesteai/tap/cargoterm
+brew tap gocelesteai/tap       # one-time, registers the tap
+brew install cargoterm         # from then on, no prefix needed
+
 brew install ollama            # if you don't have it yet
 ollama serve &                 # or launch the Ollama app on macOS
 cargoterm --setup              # verifies ollama, pulls the default model
 cargoterm                      # drops you into the >>> REPL
 ```
 
-Upgrades: `brew upgrade gocelesteai/tap/cargoterm`.
+Upgrades: `brew upgrade cargoterm`.
+
+> The `gocelesteai/tap` prefix is only needed the first time. After `brew tap`, Homebrew remembers it and `brew install cargoterm` / `brew upgrade cargoterm` work unqualified.
 
 ### Option B — prebuilt binary (manual)
 
