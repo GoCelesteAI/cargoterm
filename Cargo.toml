@@ -1,0 +1,12 @@
+[package]
+name = "cargoterm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustyline = "14"
+anyhow = "1"
+tokio = { version = "1", features = ["rt", "macros", "net", "time"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

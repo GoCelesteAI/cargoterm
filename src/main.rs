@@ -1,0 +1,212 @@
+mod history;
+mod ollama;
+
+use anyhow::Result;
+use history::History;
+use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
+use std::env;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::process::Command;
+
+const PROMPT: &str = ">>>";
+
+const DENY: &[&str] = &["rm", "sudo", "mkfs", "dd", "shutdown", "reboot", ":(){", "chmod"];
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
+    let mut rl = DefaultEditor::new()?;
+    let history_path: PathBuf = home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cargoterm_history");
+    let _ = rl.load_history(&history_path);
+
+    let mut hist = History::new();
+
+    println!("cargoterm 0.1 — type 'exit' or Ctrl-D to quit");
+
+    loop {
+        match rl.readline(PROMPT) {
+            Ok(line) => {
+                let input = line.trim();
+                if input.is_empty() {
+                    continue;
+                }
+                rl.add_history_entry(input)?;
+                if !dispatch(input, &mut hist).await {
+                    break;
+                }
+            }
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => break,
+            Err(e) => {
+                eprintln!("readline error: {e}");
+                break;
+            }
+        }
+    }
+
+    let _ = rl.save_history(&history_path);
+    Ok(())
+}
+
+async fn dispatch(input: &str, hist: &mut History) -> bool {
+    let mut parts = input.split_whitespace();
+    let first = parts.next().unwrap_or("");
+    let args: Vec<&str> = parts.collect();
+
+    match first {
+        "exit" | "quit" => return false,
+        "cd" => {
+            let target = args.first().copied().unwrap_or("~");
+            let path = expand_tilde(target);
+            match env::set_current_dir(&path) {
+                Ok(()) => hist.push(input, input, ""),
+                Err(e) => eprintln!("cd: {}: {e}", path.display()),
+            }
+            return true;
+        }
+        "pwd" => {
+            let out = match env::current_dir() {
+                Ok(p) => p.display().to_string(),
+                Err(e) => {
+                    eprintln!("pwd: {e}");
+                    return true;
+                }
+            };
+            println!("{out}");
+            hist.push(input, "pwd", &out);
+            return true;
+        }
+        _ => {}
+    }
+
+    if is_on_path(first) {
+        let captured = run_external(first, &args);
+        hist.push(input, input, &captured);
+        return true;
+    }
+
+    match ollama::interpret(input, &hist.render()).await {
+        Ok(cmd) => {
+            if let Some(bad) = deny_hit(&cmd) {
+                eprintln!("[blocked: contains '{bad}'] {cmd}");
+                return true;
+            }
+            if confirm(&cmd) {
+                let captured = run_shell(&cmd);
+                hist.push(input, &cmd, &captured);
+            }
+        }
+        Err(e) => eprintln!("cargoterm: {e}"),
+    }
+    true
+}
+
+fn is_on_path(cmd: &str) -> bool {
+    if cmd.is_empty() {
+        return false;
+    }
+    let Some(path) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&path).any(|p| p.join(cmd).is_file())
+}
+
+fn deny_hit(cmd: &str) -> Option<&'static str> {
+    let lower = cmd.to_lowercase();
+    DENY.iter().copied().find(|bad| {
+        lower.split(|c: char| !c.is_ascii_alphanumeric() && c != ':' && c != '(' && c != '{')
+            .any(|tok| tok == *bad)
+    })
+}
+
+fn confirm(cmd: &str) -> bool {
+    print!("[interpreted: {cmd}] run? [Y/n] ");
+    let _ = io::stdout().flush();
+    let mut buf = String::new();
+    if io::stdin().read_line(&mut buf).is_err() {
+        return false;
+    }
+    let s = buf.trim().to_lowercase();
+    s.is_empty() || s == "y" || s == "yes"
+}
+
+fn run_external(cmd: &str, args: &[&str]) -> String {
+    match Command::new(cmd).args(args).output() {
+        Ok(o) => emit(&o.stdout, &o.stderr),
+        Err(e) => {
+            eprintln!("cargoterm: {cmd}: {e}");
+            String::new()
+        }
+    }
+}
+
+fn run_shell(line: &str) -> String {
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    match Command::new(shell).arg("-c").arg(line).output() {
+        Ok(o) => emit(&o.stdout, &o.stderr),
+        Err(e) => {
+            eprintln!("cargoterm: {e}");
+            String::new()
+        }
+    }
+}
+
+fn emit(stdout: &[u8], stderr: &[u8]) -> String {
+    let out = String::from_utf8_lossy(stdout).into_owned();
+    let err = String::from_utf8_lossy(stderr).into_owned();
+    if !out.is_empty() {
+        print!("{out}");
+        if !out.ends_with('\n') {
+            println!();
+        }
+    }
+    if !err.is_empty() {
+        eprint!("{err}");
+        if !err.ends_with('\n') {
+            eprintln!();
+        }
+    }
+    if err.is_empty() { out } else { format!("{out}{err}") }
+}
+
+fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(stripped) = p.strip_prefix('~') {
+        if let Some(home) = home_dir() {
+            let rest = stripped.trim_start_matches('/');
+            return if rest.is_empty() { home } else { home.join(rest) };
+        }
+    }
+    PathBuf::from(p)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME").map(PathBuf::from)
+}
+
+#[cfg(not(unix))]
+compile_error!("cargoterm currently targets Unix-like systems (macOS/Linux)");
+
+#[cfg(test)]
+mod tests {
+    use super::deny_hit;
+
+    #[test]
+    fn blocks_rm() {
+        assert!(deny_hit("rm -rf /").is_some());
+    }
+    #[test]
+    fn blocks_sudo() {
+        assert!(deny_hit("sudo ls").is_some());
+    }
+    #[test]
+    fn allows_pwd() {
+        assert!(deny_hit("pwd").is_none());
+    }
+    #[test]
+    fn allows_whoami() {
+        assert!(deny_hit("whoami").is_none());
+    }
+}
