@@ -3,6 +3,7 @@ mod exec;
 mod history;
 mod ollama;
 mod setup;
+mod transcript;
 
 use anyhow::Result;
 use config::Config;
@@ -12,6 +13,7 @@ use rustyline::error::ReadlineError;
 use std::env;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use transcript::{Entry as TEntry, Origin, Transcript};
 
 const SHELL_METACHARS: &[char] = &['|', '&', ';', '>', '<', '`', '$', '\\', '\n'];
 
@@ -53,9 +55,10 @@ async fn main() -> Result<()> {
     let _ = rl.load_history(&history_path);
 
     let mut hist = History::new();
+    let mut transcript = Transcript::new();
 
     println!(
-        "cargoterm {} — type 'exit' or Ctrl-D to quit",
+        "cargoterm {} — type 'exit' or Ctrl-D to quit. Type /save to export the session.",
         env!("CARGO_PKG_VERSION")
     );
 
@@ -68,7 +71,7 @@ async fn main() -> Result<()> {
                     continue;
                 }
                 rl.add_history_entry(input)?;
-                if !dispatch(input, &cfg, &mut hist).await {
+                if !dispatch(input, &cfg, &mut hist, &mut transcript).await {
                     break;
                 }
             }
@@ -85,18 +88,36 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn dispatch(input: &str, cfg: &Config, hist: &mut History) -> bool {
+async fn dispatch(
+    input: &str,
+    cfg: &Config,
+    hist: &mut History,
+    transcript: &mut Transcript,
+) -> bool {
     let mut parts = input.split_whitespace();
     let first = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
 
     match first {
         "exit" | "quit" => return false,
+        "/save" => {
+            handle_save(args.first().copied(), transcript);
+            return true;
+        }
         "cd" => {
             let target = args.first().copied().unwrap_or("~");
             let path = expand_tilde(target);
             match env::set_current_dir(&path) {
-                Ok(()) => hist.push(input, input, ""),
+                Ok(()) => {
+                    hist.push(input, input, "");
+                    transcript.push(TEntry {
+                        input: input.to_string(),
+                        cmd: input.to_string(),
+                        explain: None,
+                        origin: Origin::Builtin,
+                        output: String::new(),
+                    });
+                }
                 Err(e) => eprintln!("cd: {}: {e}", path.display()),
             }
             return true;
@@ -111,6 +132,13 @@ async fn dispatch(input: &str, cfg: &Config, hist: &mut History) -> bool {
             };
             println!("{out}");
             hist.push(input, "pwd", &out);
+            transcript.push(TEntry {
+                input: input.to_string(),
+                cmd: "pwd".to_string(),
+                explain: None,
+                origin: Origin::Builtin,
+                output: out,
+            });
             return true;
         }
         _ => {}
@@ -119,6 +147,13 @@ async fn dispatch(input: &str, cfg: &Config, hist: &mut History) -> bool {
     if is_on_path(first) {
         let captured = exec::run_direct(first, &args).await;
         hist.push(input, input, &captured);
+        transcript.push(TEntry {
+            input: input.to_string(),
+            cmd: input.to_string(),
+            explain: None,
+            origin: Origin::Direct,
+            output: captured,
+        });
         return true;
     }
 
@@ -128,20 +163,42 @@ async fn dispatch(input: &str, cfg: &Config, hist: &mut History) -> bool {
                 eprintln!("[blocked: contains '{bad}'] {}", interp.cmd);
                 return true;
             }
-            let should_run = if is_safe_auto(&cfg.safety.allow, &interp.cmd) {
+            let (should_run, origin) = if is_safe_auto(&cfg.safety.allow, &interp.cmd) {
                 println!("[auto: {}]", interp.cmd);
-                true
+                (true, Origin::Auto)
             } else {
-                confirm(&interp.cmd, &interp.explain)
+                (confirm(&interp.cmd, &interp.explain), Origin::Confirmed)
             };
             if should_run {
                 let captured = exec::run_shell(&interp.cmd).await;
                 hist.push(input, &interp.cmd, &captured);
+                transcript.push(TEntry {
+                    input: input.to_string(),
+                    cmd: interp.cmd,
+                    explain: Some(interp.explain),
+                    origin,
+                    output: captured,
+                });
             }
         }
         Err(e) => eprintln!("cargoterm: {e}"),
     }
     true
+}
+
+fn handle_save(path_arg: Option<&str>, transcript: &Transcript) {
+    if transcript.is_empty() {
+        println!("(no turns to save yet)");
+        return;
+    }
+    let target = match path_arg {
+        Some(p) => expand_tilde(p),
+        None => PathBuf::from(transcript.default_filename()),
+    };
+    match transcript.save(&target) {
+        Ok(written) => println!("saved transcript to {}", written.display()),
+        Err(e) => eprintln!("save failed: {e}"),
+    }
 }
 
 fn is_on_path(cmd: &str) -> bool {
@@ -257,7 +314,10 @@ OPTIONS:
 
 Inside the REPL: type shell commands normally, or plain English to let the
 local LLM translate. LLM-generated commands show a confirmation prompt
-unless they are on the known-safe allowlist.",
+unless they are on the known-safe allowlist.
+
+Meta commands (typed at the `>>>` prompt):
+    /save [PATH]        Save the current session as markdown",
         env!("CARGO_PKG_VERSION")
     );
 }

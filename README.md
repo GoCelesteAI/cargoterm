@@ -30,7 +30,7 @@ Everything runs **locally** — the LLM lives on your machine via [Ollama](https
 ## Features
 
 - Cwd-aware `>>>` REPL with readline editing and persistent history (`~/.cargoterm_history`)
-- Built-ins: `cd`, `pwd`, `exit`
+- Built-ins: `cd`, `pwd`, `exit`, plus `/save` to export the session as markdown
 - Transparent pass-through to any command on your `PATH` (`ls`, `whoami`, `git`, …)
 - Natural-language fallback routed to a local LLM (Qwen via Ollama by default)
 - **Allowlist auto-approve** — known read-only commands (`pwd`, `whoami`, `ls`, `date`, `du`, …) run immediately when the LLM emits them clean
@@ -163,6 +163,20 @@ The last 5 turns (your input, the command that ran, and its output, truncated) a
 >>> what's the biggest one
 ```
 
+### Saving a session
+
+Type `/save` at the prompt to export the current session as a markdown file:
+
+```text
+~/code/cargoterm >>> /save
+saved transcript to cargoterm-session-1744678800.md
+
+~/code/cargoterm >>> /save ~/notes/debug-session.md
+saved transcript to /Users/you/notes/debug-session.md
+```
+
+`/save` with no path writes `cargoterm-session-<epoch>.md` in the current directory. If the target already exists, a numeric suffix is appended (`-2`, `-3`, …) so nothing gets overwritten. Each turn is rendered with the user input, the actual command that ran (marked as `builtin`/`direct`/`auto`/`confirmed`), the model's explanation if there was one, and the captured output.
+
 ## Configuration
 
 cargoterm reads an optional TOML config file on startup. The default location follows XDG:
@@ -229,8 +243,7 @@ Dispatch order for any input line:
 
 ## Roadmap
 
-- [ ] Streaming command output instead of buffered capture
-- [ ] Session transcript export
+(All original roadmap items are shipped. New ideas welcome — open an issue.)
 
 ## Contributing
 
