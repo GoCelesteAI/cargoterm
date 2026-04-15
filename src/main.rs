@@ -1,5 +1,6 @@
 mod history;
 mod ollama;
+mod setup;
 
 use anyhow::Result;
 use history::History;
@@ -7,10 +8,8 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::env;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-
-const PROMPT: &str = ">>>";
 
 const DENY: &[&str] = &["rm", "sudo", "mkfs", "dd", "shutdown", "reboot", ":(){", "chmod"];
 
@@ -24,6 +23,19 @@ const SHELL_METACHARS: &[char] = &['|', '&', ';', '>', '<', '`', '$', '\\', '\n'
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    let args: Vec<String> = env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("cargoterm {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--setup") {
+        return setup::run().await;
+    }
+
     let mut rl = DefaultEditor::new()?;
     let history_path: PathBuf = home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -32,10 +44,11 @@ async fn main() -> Result<()> {
 
     let mut hist = History::new();
 
-    println!("cargoterm 0.1 — type 'exit' or Ctrl-D to quit");
+    println!("cargoterm {} — type 'exit' or Ctrl-D to quit", env!("CARGO_PKG_VERSION"));
 
     loop {
-        match rl.readline(PROMPT) {
+        let prompt = build_prompt();
+        match rl.readline(&prompt) {
             Ok(line) => {
                 let input = line.trim();
                 if input.is_empty() {
@@ -216,12 +229,51 @@ fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME").map(PathBuf::from)
 }
 
+fn build_prompt() -> String {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("?"));
+    format!("{} >>> ", shorten_path(&cwd))
+}
+
+fn shorten_path(p: &Path) -> String {
+    if let Some(home) = home_dir() {
+        if let Ok(rest) = p.strip_prefix(&home) {
+            let rest_str = rest.to_string_lossy();
+            return if rest_str.is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{rest_str}")
+            };
+        }
+    }
+    p.display().to_string()
+}
+
+fn print_help() {
+    println!(
+        "cargoterm {} — AI-augmented terminal
+
+USAGE:
+    cargoterm [OPTIONS]
+
+OPTIONS:
+    --setup       Check that Ollama and the default model are ready
+    -h, --help    Show this help
+    -V, --version Show version
+
+Inside the REPL: type shell commands normally, or plain English to let the
+local LLM translate. LLM-generated commands show a confirmation prompt
+unless they are on the known-safe allowlist.",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
 #[cfg(not(unix))]
 compile_error!("cargoterm currently targets Unix-like systems (macOS/Linux)");
 
 #[cfg(test)]
 mod tests {
-    use super::{deny_hit, has_metachars, is_safe_auto};
+    use super::{deny_hit, has_metachars, is_safe_auto, shorten_path};
+    use std::path::PathBuf;
 
     #[test]
     fn blocks_rm() {
@@ -279,5 +331,24 @@ mod tests {
     #[test]
     fn metachar_ignores_dash() {
         assert!(!has_metachars("ls -la"));
+    }
+
+    #[test]
+    fn shorten_leaves_unrelated_paths() {
+        let out = shorten_path(&PathBuf::from("/etc/hosts"));
+        assert_eq!(out, "/etc/hosts");
+    }
+    #[test]
+    fn shorten_contracts_home_subpath() {
+        if let Some(home) = std::env::var_os("HOME") {
+            let p = PathBuf::from(&home).join("projects/foo");
+            assert_eq!(shorten_path(&p), "~/projects/foo");
+        }
+    }
+    #[test]
+    fn shorten_contracts_home_itself() {
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(shorten_path(&PathBuf::from(home)), "~");
+        }
     }
 }

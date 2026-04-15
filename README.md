@@ -3,17 +3,21 @@
 An AI-augmented terminal in Rust. Type plain commands like you would in any shell — or type in plain English and let a local LLM translate it into a shell command for you.
 
 ```text
-cargoterm 0.1 — type 'exit' or Ctrl-D to quit
->>> pwd
-/Volumes/wd/code/Rust/cargoterm
->>> show present directory
-[interpreted: pwd] run? [Y/n] Y
-/Volumes/wd/code/Rust/cargoterm
->>> who am i
-[interpreted: whoami] run? [Y/n] Y
-somaria
->>> and its size
-[interpreted: du -sh . ] run? [Y/n] Y
+cargoterm 0.1.0 — type 'exit' or Ctrl-D to quit
+~/code/cargoterm >>> pwd
+/Users/you/code/cargoterm
+~/code/cargoterm >>> who am i
+[auto: whoami]
+you
+~/code/cargoterm >>> show present directory size
+[interpreted: du -sh .]
+[what this does: Reports the total disk usage of the current directory in human-readable form.]
+run? [Y/n] Y
+ 12M    .
+~/code/cargoterm >>> and sort the files here by size
+[interpreted: ls -lS]
+[what this does: Lists files in the current directory sorted by size, largest first.]
+run? [Y/n] Y
 ...
 ```
 
@@ -21,17 +25,19 @@ Everything runs **locally** — the LLM lives on your machine via [Ollama](https
 
 ## Features
 
-- `>>>` REPL with readline editing and persistent history (`~/.cargoterm_history`)
+- Cwd-aware `>>>` REPL with readline editing and persistent history (`~/.cargoterm_history`)
 - Built-ins: `cd`, `pwd`, `exit`
 - Transparent pass-through to any command on your `PATH` (`ls`, `whoami`, `git`, …)
 - Natural-language fallback routed to a local LLM (Qwen via Ollama by default)
-- **Confirmation prompt** before executing any LLM-generated command
-- Denylist blocks obviously destructive operations (`rm`, `sudo`, `dd`, `mkfs`, …) before the confirmation step
+- **Allowlist auto-approve** — known read-only commands (`pwd`, `whoami`, `ls`, `date`, `du`, …) run immediately when the LLM emits them clean
+- **Confirmation gate with explanation** for anything else — the command is shown alongside a plain-English description of what it will do
+- Denylist blocks obviously destructive operations (`rm`, `sudo`, `dd`, `mkfs`, …) outright
 - Context memory: the last 5 turns are fed back to the model, so follow-ups like *"and its size"* or *"list files there"* work
+- `cargoterm --setup` health-checks Ollama and offers to pull the default model
 
 ## Quickstart
 
-Four steps to go from zero to `>>>`:
+Five steps to go from zero to `>>>`:
 
 ```sh
 # 1. Install Rust (skip if you already have it)
@@ -41,22 +47,21 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 brew install ollama
 ollama serve &          # or launch the Ollama app
 
-# 3. Pull the default model (one-time, ~9 GB)
-ollama pull qwen3:14b
-
-# 4. Install cargoterm
+# 3. Install cargoterm
 git clone https://github.com/GoCelesteAI/cargoterm.git
 cd cargoterm
 cargo install --path .
-```
 
-`cargo install` compiles in release mode and drops the binary at `~/.cargo/bin/cargoterm`. That directory is on your `PATH` if you installed Rust via rustup, so from any directory you can now just type:
+# 4. Verify + pull the default model (~9 GB, one-time)
+cargoterm --setup
 
-```sh
+# 5. Start the REPL from anywhere
 cargoterm
 ```
 
-and get the `>>>` prompt.
+`cargo install` compiles in release mode and drops the binary at `~/.cargo/bin/cargoterm`. That directory is on your `PATH` if you installed Rust via rustup, so typing `cargoterm` from any directory drops you into the `>>>` prompt.
+
+`cargoterm --setup` runs a three-step health check (Ollama binary → daemon → default model) and, if the model is missing, offers to pull it for you via `ollama pull`. Run it anytime something feels broken.
 
 ### Running from source (for development)
 
@@ -85,11 +90,21 @@ Anything that looks like a shell command is executed as one:
 >>> cd ~/projects
 ```
 
-Anything that doesn't is sent to the model, which replies with a single shell command. You are always shown the interpretation and asked to confirm:
+Anything that doesn't is sent to the model, which replies with a single shell command plus a plain-English description. Known-safe read-only commands run immediately; anything else is shown to you for approval:
 
 ```text
 >>> what day is it
-[interpreted: date] run? [Y/n]
+[auto: date]
+Wed Apr 15 10:27:31 PDT 2026
+
+>>> free up space
+[interpreted: rm -rf ~/.cache/*]
+[blocked: contains 'rm']
+
+>>> how big is my cache folder
+[interpreted: du -sh ~/Library/Caches]
+[what this does: Reports the total disk usage of your user cache directory.]
+run? [Y/n]
 ```
 
 Press `Y` / Enter to run, `n` to cancel.
@@ -118,10 +133,12 @@ Editing those constants and rebuilding is the current way to swap models. A prop
 
 ## Safety
 
-LLMs can and do produce wrong, surprising, or dangerous shell commands. cargoterm mitigates this with two gates:
+LLMs can and do produce wrong, surprising, or dangerous shell commands. cargoterm mitigates this with layered gates, applied in order to every LLM-generated command:
 
-1. **Denylist.** Any LLM-generated command containing `rm`, `sudo`, `mkfs`, `dd`, `shutdown`, `reboot`, `chmod`, or a fork-bomb pattern is refused outright.
-2. **Confirmation.** Every LLM-generated command is shown in full and requires your explicit approval before execution.
+1. **Denylist** — anything containing `rm`, `sudo`, `mkfs`, `dd`, `shutdown`, `reboot`, `chmod`, or a fork-bomb pattern is refused outright.
+2. **Allowlist auto-approve** — known read-only commands (`pwd`, `whoami`, `ls`, `date`, `du`, `cat`, `head`, `tail`, `file`, `stat`, …) run immediately, but *only* when the command contains no shell metacharacters (`|`, `&`, `;`, `>`, `<`, `` ` ``, `$`). A command like `ls | rm -rf /` does **not** auto-approve.
+3. **Explanation + confirmation** — anything else is shown with its command AND a plain-English description from the model of what it does. You must press `Y` / Enter to run.
+4. **Untrusted output** — captured command output fed back into the model's context is flagged as untrusted, so the model is less likely to follow injected instructions hiding in files, log lines, or git output.
 
 Direct commands you type yourself (matching a binary on `PATH`) are **not** gated — cargoterm trusts you to know what `rm` does when you type it.
 
@@ -131,27 +148,24 @@ The denylist is defensive, not exhaustive. Read what you run.
 
 ```text
 src/
-├── main.rs      REPL, dispatcher, built-ins, confirm/deny gates
+├── main.rs      REPL, dispatcher, built-ins, confirm/deny/allow gates
 ├── ollama.rs    HTTP client + strict JSON prompt for the model
-└── history.rs   Ring buffer of recent turns, rendered into the prompt
+├── history.rs   Ring buffer of recent turns, rendered into the prompt
+└── setup.rs     `cargoterm --setup` health check + model pull
 ```
 
 Dispatch order for any input line:
 
 1. Built-in? (`cd`, `pwd`, `exit`) → handle in-process.
 2. First token on `PATH`? → exec directly, capture output.
-3. Otherwise → send to Ollama, confirm, run via `$SHELL -c`.
+3. Otherwise → send to Ollama. Denylist → block. Allowlist (clean, no metachars) → run. Else → confirm with explanation, then run via `$SHELL -c`.
 
 ## Roadmap
 
 - [ ] Prebuilt binaries on GitHub Releases (macOS arm64/x86_64, Linux x86_64)
 - [ ] Homebrew formula (`brew install gocelesteai/tap/cargoterm`)
-- [ ] `cargoterm --setup` — verify Ollama, pull the default model
-- [ ] Config file (`~/.config/cargoterm/config.toml`) — model, endpoint, denylist
+- [ ] Config file (`~/.config/cargoterm/config.toml`) — model, endpoint, denylist, allowlist
 - [ ] Streaming command output instead of buffered capture
-- [ ] Prompt that shows the current working directory
-- [ ] Whitelist of safe read-only commands that skip the confirmation prompt
-- [ ] Optional explanation mode: ask the model *why* before running
 - [ ] Session transcript export
 
 ## Contributing

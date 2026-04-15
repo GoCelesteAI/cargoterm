@@ -2,8 +2,9 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+pub const HOST: &str = "http://localhost:11434";
+pub const MODEL: &str = "qwen3:14b";
 const ENDPOINT: &str = "http://localhost:11434/api/generate";
-const MODEL: &str = "qwen3:14b";
 
 const SYSTEM: &str = "You translate a user's natural-language request into a single POSIX shell \
 command for macOS.\n\
