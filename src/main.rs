@@ -1,4 +1,5 @@
 mod config;
+mod exec;
 mod history;
 mod ollama;
 mod setup;
@@ -11,7 +12,6 @@ use rustyline::error::ReadlineError;
 use std::env;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const SHELL_METACHARS: &[char] = &['|', '&', ';', '>', '<', '`', '$', '\\', '\n'];
 
@@ -117,7 +117,7 @@ async fn dispatch(input: &str, cfg: &Config, hist: &mut History) -> bool {
     }
 
     if is_on_path(first) {
-        let captured = run_external(first, &args);
+        let captured = exec::run_direct(first, &args).await;
         hist.push(input, input, &captured);
         return true;
     }
@@ -135,7 +135,7 @@ async fn dispatch(input: &str, cfg: &Config, hist: &mut History) -> bool {
                 confirm(&interp.cmd, &interp.explain)
             };
             if should_run {
-                let captured = run_shell(&interp.cmd);
+                let captured = exec::run_shell(&interp.cmd).await;
                 hist.push(input, &interp.cmd, &captured);
             }
         }
@@ -202,49 +202,6 @@ fn confirm(cmd: &str, explain: &str) -> bool {
     }
     let s = buf.trim().to_lowercase();
     s.is_empty() || s == "y" || s == "yes"
-}
-
-fn run_external(cmd: &str, args: &[&str]) -> String {
-    match Command::new(cmd).args(args).output() {
-        Ok(o) => emit(&o.stdout, &o.stderr),
-        Err(e) => {
-            eprintln!("cargoterm: {cmd}: {e}");
-            String::new()
-        }
-    }
-}
-
-fn run_shell(line: &str) -> String {
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    match Command::new(shell).arg("-c").arg(line).output() {
-        Ok(o) => emit(&o.stdout, &o.stderr),
-        Err(e) => {
-            eprintln!("cargoterm: {e}");
-            String::new()
-        }
-    }
-}
-
-fn emit(stdout: &[u8], stderr: &[u8]) -> String {
-    let out = String::from_utf8_lossy(stdout).into_owned();
-    let err = String::from_utf8_lossy(stderr).into_owned();
-    if !out.is_empty() {
-        print!("{out}");
-        if !out.ends_with('\n') {
-            println!();
-        }
-    }
-    if !err.is_empty() {
-        eprint!("{err}");
-        if !err.ends_with('\n') {
-            eprintln!();
-        }
-    }
-    if err.is_empty() {
-        out
-    } else {
-        format!("{out}{err}")
-    }
 }
 
 fn expand_tilde(p: &str) -> PathBuf {
