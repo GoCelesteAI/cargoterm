@@ -14,6 +14,14 @@ const PROMPT: &str = ">>>";
 
 const DENY: &[&str] = &["rm", "sudo", "mkfs", "dd", "shutdown", "reboot", ":(){", "chmod"];
 
+const SAFE_ALLOW: &[&str] = &[
+    "pwd", "whoami", "hostname", "uname", "date", "uptime", "id", "groups", "tty", "arch",
+    "ls", "cat", "head", "tail", "wc", "file", "stat", "readlink", "basename", "dirname",
+    "df", "du", "echo", "printf", "which", "type", "env", "printenv", "history",
+];
+
+const SHELL_METACHARS: &[char] = &['|', '&', ';', '>', '<', '`', '$', '\\', '\n'];
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let mut rl = DefaultEditor::new()?;
@@ -89,14 +97,20 @@ async fn dispatch(input: &str, hist: &mut History) -> bool {
     }
 
     match ollama::interpret(input, &hist.render()).await {
-        Ok(cmd) => {
-            if let Some(bad) = deny_hit(&cmd) {
-                eprintln!("[blocked: contains '{bad}'] {cmd}");
+        Ok(interp) => {
+            if let Some(bad) = deny_hit(&interp.cmd) {
+                eprintln!("[blocked: contains '{bad}'] {}", interp.cmd);
                 return true;
             }
-            if confirm(&cmd) {
-                let captured = run_shell(&cmd);
-                hist.push(input, &cmd, &captured);
+            let should_run = if is_safe_auto(&interp.cmd) {
+                println!("[auto: {}]", interp.cmd);
+                true
+            } else {
+                confirm(&interp.cmd, &interp.explain)
+            };
+            if should_run {
+                let captured = run_shell(&interp.cmd);
+                hist.push(input, &interp.cmd, &captured);
             }
         }
         Err(e) => eprintln!("cargoterm: {e}"),
@@ -122,8 +136,24 @@ fn deny_hit(cmd: &str) -> Option<&'static str> {
     })
 }
 
-fn confirm(cmd: &str) -> bool {
-    print!("[interpreted: {cmd}] run? [Y/n] ");
+fn has_metachars(cmd: &str) -> bool {
+    cmd.chars().any(|c| SHELL_METACHARS.contains(&c))
+}
+
+fn is_safe_auto(cmd: &str) -> bool {
+    if has_metachars(cmd) {
+        return false;
+    }
+    let first = cmd.split_whitespace().next().unwrap_or("");
+    SAFE_ALLOW.contains(&first)
+}
+
+fn confirm(cmd: &str, explain: &str) -> bool {
+    println!("[interpreted: {cmd}]");
+    if !explain.is_empty() {
+        println!("[what this does: {explain}]");
+    }
+    print!("run? [Y/n] ");
     let _ = io::stdout().flush();
     let mut buf = String::new();
     if io::stdin().read_line(&mut buf).is_err() {
@@ -191,7 +221,7 @@ compile_error!("cargoterm currently targets Unix-like systems (macOS/Linux)");
 
 #[cfg(test)]
 mod tests {
-    use super::deny_hit;
+    use super::{deny_hit, has_metachars, is_safe_auto};
 
     #[test]
     fn blocks_rm() {
@@ -208,5 +238,46 @@ mod tests {
     #[test]
     fn allows_whoami() {
         assert!(deny_hit("whoami").is_none());
+    }
+
+    #[test]
+    fn auto_whoami() {
+        assert!(is_safe_auto("whoami"));
+    }
+    #[test]
+    fn auto_pwd() {
+        assert!(is_safe_auto("pwd"));
+    }
+    #[test]
+    fn auto_ls_with_flags() {
+        assert!(is_safe_auto("ls -la"));
+    }
+    #[test]
+    fn not_auto_git() {
+        assert!(!is_safe_auto("git status"));
+    }
+    #[test]
+    fn not_auto_pipe_even_if_safe_first() {
+        assert!(!is_safe_auto("ls | rm -rf /"));
+    }
+    #[test]
+    fn not_auto_redirect() {
+        assert!(!is_safe_auto("cat /etc/passwd > /tmp/out"));
+    }
+    #[test]
+    fn not_auto_subshell() {
+        assert!(!is_safe_auto("echo $(rm -rf /)"));
+    }
+    #[test]
+    fn not_auto_backtick() {
+        assert!(!is_safe_auto("echo `rm -rf /`"));
+    }
+    #[test]
+    fn metachar_detects_pipe() {
+        assert!(has_metachars("a | b"));
+    }
+    #[test]
+    fn metachar_ignores_dash() {
+        assert!(!has_metachars("ls -la"));
     }
 }
