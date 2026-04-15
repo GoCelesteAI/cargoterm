@@ -230,6 +230,13 @@ async fn run_translate(cfg: &Config, query: &str) -> Result<()> {
     }
     match ollama::interpret(&cfg.ollama, trimmed, "").await {
         Ok(interp) => {
+            if let Some(bad) = deny_hit(&cfg.safety.deny, &interp.cmd) {
+                eprintln!(
+                    "cargoterm: blocked (contains '{bad}'): {}",
+                    interp.cmd.replace('\n', " ")
+                );
+                std::process::exit(3);
+            }
             let cmd_oneline = interp.cmd.replace('\n', " ");
             let explain_oneline = interp.explain.replace('\n', " ");
             println!("cmd: {cmd_oneline}");

@@ -175,19 +175,28 @@ Then, in any zsh session:
 
 ```text
 ~/code/cargoterm $ cargoterm-on
-cargoterm: ON — press Ctrl+G to translate the current line
+cargoterm: ON — type natural language, press Enter to translate, Enter again to run
 
-◉ ~/code/cargoterm $ who am i⎵       # type the line, then press Ctrl+G
-◉ ~/code/cargoterm $ whoami          # buffer replaced in place
-daryl                                 # press Enter to run
+◉ ~/code/cargoterm $ ls                 # real command → runs immediately, no LLM call
+file1 file2 ...
+
+◉ ~/code/cargoterm $ show present directory   # natural language → press Enter
+◉ ~/code/cargoterm $ pwd                # buffer replaces in place
+⟶ Prints the absolute path of the current working directory. Press Enter to run, Ctrl+U to cancel.
+◉ ~/code/cargoterm $ pwd                # press Enter again to execute
+/Users/you/code/cargoterm
 
 ◉ ~/code/cargoterm $ cargoterm-off
 cargoterm: OFF
 ```
 
-- `cargoterm-on` / `cargoterm-off` toggle the mode. While on, your prompt gets a bold `◉` indicator so you can see at a glance that AI translation is a keystroke away.
-- `Ctrl+G` reads whatever's currently in the line buffer, sends it to the local model via `cargoterm --translate`, and replaces the buffer with the suggested shell command. The model's one-line explanation appears as a zsh message above the prompt.
-- Regular commands pass through unchanged — the keybinding is opt-in per line.
+**How it decides what to translate.** While the mode is on, pressing Enter takes one of three paths:
+
+1. **Real command passes through.** If the first word resolves to a binary on `PATH`, a shell function, an alias, a builtin, or `cd`/`exit`, the line runs immediately — no LLM call, no latency.
+2. **Natural language gets translated.** Otherwise the line is sent to the local model via `cargoterm --translate`, the buffer is rewritten with the suggested command, and an explanation appears above the prompt. Press Enter a second time to run it, edit it first, or Ctrl+U to cancel.
+3. **Dangerous output is blocked.** If the model emits anything containing `rm`, `sudo`, `dd`, etc., the denylist refuses it before it reaches your buffer.
+
+**Ctrl+G still works.** It's the explicit "translate this line regardless" escape hatch — useful when you want to translate input that happens to start with a real command name (e.g., *"find my documents"* starts with `find`, which would otherwise run literally).
 
 Under the hood this uses `cargoterm --translate "<query>"`, which prints two lines to stdout and exits — you can wire it up from other shells or editors too:
 

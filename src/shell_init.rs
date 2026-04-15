@@ -21,7 +21,10 @@ cargoterm-on() {
     export CARGOTERM_ACTIVE=1
     _CARGOTERM_ORIG_PROMPT="$PROMPT"
     PROMPT="%B◉%b ${_CARGOTERM_ORIG_PROMPT}"
-    echo "cargoterm: ON — press Ctrl+G to translate the current line"
+    _CARGOTERM_PREV_ENTER=$(bindkey -L '^M' 2>/dev/null | awk '{print $NF}')
+    [[ -z "$_CARGOTERM_PREV_ENTER" ]] && _CARGOTERM_PREV_ENTER="accept-line"
+    bindkey '^M' _cargoterm_accept_line
+    echo "cargoterm: ON — type natural language, press Enter to translate, Enter again to run"
 }
 
 cargoterm-off() {
@@ -29,7 +32,9 @@ cargoterm-off() {
         echo "cargoterm: already OFF"
         return
     fi
-    unset CARGOTERM_ACTIVE
+    unset CARGOTERM_ACTIVE CARGOTERM_PENDING_CMD
+    bindkey '^M' "${_CARGOTERM_PREV_ENTER:-accept-line}"
+    unset _CARGOTERM_PREV_ENTER
     if [[ -n "$_CARGOTERM_ORIG_PROMPT" ]]; then
         PROMPT="$_CARGOTERM_ORIG_PROMPT"
     fi
@@ -37,43 +42,90 @@ cargoterm-off() {
     echo "cargoterm: OFF"
 }
 
-_cargoterm_translate_widget() {
+# Shared: translate the current BUFFER in place. Used by Ctrl+G always, and
+# by the accept-line override while the mode is active.
+_cargoterm_translate_buffer() {
     local input="$BUFFER"
     if [[ -z "$input" ]]; then
         zle -M "cargoterm: nothing to translate"
-        return
+        return 1
     fi
     if ! command -v cargoterm >/dev/null 2>&1; then
         zle -M "cargoterm: binary not found on PATH"
-        return
+        return 1
     fi
-    local output
-    output=$(cargoterm --translate "$input" 2>/dev/null)
-    if [[ $? -ne 0 || -z "$output" ]]; then
-        zle -M "cargoterm: translation failed (is ollama running?)"
-        return
+    local output exit_code
+    output=$(cargoterm --translate "$input" 2>&1)
+    exit_code=$?
+    if (( exit_code != 0 )); then
+        local msg="${output#cargoterm: }"
+        msg="${msg%%$'\n'*}"
+        zle -M "cargoterm: ${msg:-translation failed}"
+        return 1
     fi
-    local cmd=""
-    local explain=""
-    local line
+    local cmd="" explain="" line
     while IFS= read -r line; do
         case "$line" in
             cmd:\ *)     cmd="${line#cmd: }" ;;
             explain:\ *) explain="${line#explain: }" ;;
         esac
     done <<< "$output"
-    if [[ -n "$cmd" ]]; then
-        BUFFER="$cmd"
-        CURSOR=${#BUFFER}
-        if [[ -n "$explain" ]]; then
-            zle -M "$explain"
-        fi
-    else
+    if [[ -z "$cmd" ]]; then
         zle -M "cargoterm: model returned no command"
+        return 1
     fi
+    BUFFER="$cmd"
+    CURSOR=${#BUFFER}
+    CARGOTERM_PENDING_CMD="$cmd"
+    if [[ -n "$explain" ]]; then
+        zle -M "$explain — press Enter to run, Ctrl+U to cancel"
+    else
+        zle -M "press Enter to run, Ctrl+U to cancel"
+    fi
+    return 0
+}
+
+# Ctrl+G — always translate the current line, regardless of mode.
+_cargoterm_translate_widget() {
+    _cargoterm_translate_buffer
 }
 zle -N _cargoterm_translate_widget
 bindkey '^G' _cargoterm_translate_widget
+
+# Enter — smart accept: while mode is on, translate English input; pass
+# real commands (binary/function/alias/builtin) straight through; a second
+# Enter press after a translation runs the rewritten command.
+_cargoterm_accept_line() {
+    # Mode off or empty buffer → normal accept
+    if [[ -z "$CARGOTERM_ACTIVE" || -z "$BUFFER" ]]; then
+        zle .accept-line
+        return
+    fi
+    # Second Enter after a translation → run what's in the buffer
+    if [[ -n "$CARGOTERM_PENDING_CMD" && "$BUFFER" == "$CARGOTERM_PENDING_CMD" ]]; then
+        unset CARGOTERM_PENDING_CMD
+        zle .accept-line
+        return
+    fi
+    # Buffer changed since last translation — discard pending state
+    unset CARGOTERM_PENDING_CMD
+
+    # Skip LLM when the first token is something we can resolve locally.
+    local first="${BUFFER%% *}"
+    if [[ "$first" == "cd" || "$first" == "exit" ]] \
+        || (( ${+commands[$first]} )) \
+        || (( ${+functions[$first]} )) \
+        || (( ${+aliases[$first]} )) \
+        || (( ${+builtins[$first]} )); then
+        zle .accept-line
+        return
+    fi
+
+    # Natural language path — translate; widget shows message and leaves
+    # the rewritten buffer for the user to confirm with a second Enter.
+    _cargoterm_translate_buffer
+}
+zle -N _cargoterm_accept_line
 "##;
 
 #[cfg(test)]
@@ -86,7 +138,29 @@ mod tests {
         assert!(snippet.contains("cargoterm-on()"));
         assert!(snippet.contains("cargoterm-off()"));
         assert!(snippet.contains("_cargoterm_translate_widget"));
+        assert!(snippet.contains("_cargoterm_accept_line"));
         assert!(snippet.contains("bindkey '^G'"));
+    }
+
+    #[test]
+    fn zsh_snippet_rebinds_enter_in_cargoterm_on() {
+        let snippet = render("zsh").unwrap();
+        assert!(snippet.contains("bindkey '^M' _cargoterm_accept_line"));
+        assert!(snippet.contains("_CARGOTERM_PREV_ENTER"));
+    }
+
+    #[test]
+    fn zsh_snippet_passes_through_known_commands() {
+        let snippet = render("zsh").unwrap();
+        assert!(snippet.contains("${+commands[$first]}"));
+        assert!(snippet.contains("${+functions[$first]}"));
+        assert!(snippet.contains("${+aliases[$first]}"));
+    }
+
+    #[test]
+    fn zsh_snippet_uses_double_enter_pattern() {
+        let snippet = render("zsh").unwrap();
+        assert!(snippet.contains("CARGOTERM_PENDING_CMD"));
     }
 
     #[test]
